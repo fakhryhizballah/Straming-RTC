@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StreamLokal - Video Call</title>
+    
+    <!-- Tailwind CSS & Phosphor Icons -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    
+    <!-- Socket.io Client -->
+    <script src="/live/socket.io/socket.io.js"></script>
+    
+    <style>
+        .hidden { display: none !important; }
+        .fade-in { animation: fadeIn 0.4s ease-out forwards; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: scale(0.95); }
+            to { opacity: 1; transform: scale(1); }
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-blue-500/30 flex flex-col">
+
+    <!-- Header -->
+    <header class="p-4 border-b border-slate-800 bg-slate-900/80 backdrop-blur-md sticky top-0 z-20">
+        <div class="max-w-6xl mx-auto flex justify-between items-center">
+            <div class="flex items-center gap-2">
+                <i class="ph-fill ph-video-camera text-blue-500 text-2xl"></i>
+                <h1 class="text-xl font-bold tracking-tight">StreamLokal <span class="text-sm font-normal text-slate-400">| Video Call</span></h1>
+            </div>
+            <button id="btn-leave" class="hidden items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white transition-colors">
+                <i class="ph ph-phone-disconnect text-lg"></i> Akhiri Panggilan
+            </button>
+        </div>
+    </header>
+
+    <main class="flex-1 flex items-center justify-center p-4">
+        
+        <!-- Layar Bergabung (Join Screen) -->
+        <div id="screen-join" class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl fade-in">
+            <div class="text-center mb-8">
+                <div class="w-20 h-20 mx-auto bg-blue-500/20 rounded-full flex items-center justify-center mb-4">
+                    <i class="ph-fill ph-users-three text-blue-400 text-4xl"></i>
+                </div>
+                <h2 class="text-2xl font-bold mb-2">Mulai Video Call</h2>
+                <p class="text-slate-400 text-sm">Buat Room ID baru atau masukkan Room ID teman Anda untuk bergabung.</p>
+            </div>
+            
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-slate-400 mb-1 ml-1">Custom Room ID</label>
+                    <input type="text" id="input-room-id" placeholder="Contoh: DEV-99X" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-center tracking-widest font-mono uppercase transition-all" />
+                </div>
+                <button id="btn-join-room" disabled class="w-full py-3.5 px-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:bg-slate-800 disabled:text-slate-500 text-white font-bold rounded-xl transition-all shadow-lg shadow-blue-900/20 flex items-center justify-center gap-2">
+                    <i class="ph ph-sign-in text-xl"></i> Gabung ke Ruangan
+                </button>
+            </div>
+        </div>
+
+        <!-- Layar Panggilan (Call Screen) -->
+        <div id="screen-call" class="hidden w-full max-w-6xl flex-col gap-4 fade-in h-full">
+            <!-- Informasi Room -->
+            <div class="flex items-center justify-between bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-lg">
+                <div class="flex items-center gap-3">
+                    <div class="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></div>
+                    <span id="call-status" class="text-slate-300 font-medium">Menunggu partner bergabung...</span>
+                </div>
+                <div class="flex items-center gap-2 bg-slate-950 px-4 py-2 rounded-xl border border-slate-800">
+                    <span class="text-sm text-slate-500">ROOM:</span>
+                    <span id="display-room-id" class="font-mono font-bold text-blue-400 tracking-widest">---</span>
+                </div>
+            </div>
+
+            <!-- Video Grid -->
+            <div class="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4 relative min-h-[400px]">
+                
+                <!-- Video Remote (Lawan Bicara) -->
+                <div class="relative bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl md:order-2 h-full min-h-[300px]">
+                    <video id="remote-video" autoplay playsinline class="w-full h-full object-cover bg-slate-950"></video>
+                    <div id="remote-loading" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 backdrop-blur-sm z-10">
+                        <i class="ph ph-spinner-gap text-4xl text-blue-500 animate-spin mb-3"></i>
+                        <p class="text-slate-400 font-medium">Menunggu Partner...</p>
+                    </div>
+                    <div class="absolute bottom-4 left-4 bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-lg text-sm text-white font-medium border border-white/10 z-20">
+                        Lawan Bicara
+                    </div>
+                </div>
+
+                <!-- Video Local (Kita) -->
+                <div class="relative bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl md:order-1 h-full min-h-[300px]">
+                    <video id="local-video" autoplay playsinline muted class="w-full h-full object-cover bg-slate-950 transform scale-x-[-1]"></video>
+                    <div class="absolute bottom-4 left-4 bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-lg text-sm text-white font-medium border border-white/10 z-20">
+                        Anda
+                    </div>
+                    
+                    <!-- Kontrol Media Lokal -->
+                    <div class="absolute bottom-4 right-4 flex gap-2 z-20">
+                        <button id="btn-toggle-mic" class="p-3 bg-slate-900/80 hover:bg-slate-800 backdrop-blur rounded-xl text-white transition-colors border border-slate-700 shadow-lg">
+                            <i class="ph ph-microphone text-xl" id="icon-mic"></i>
+                        </button>
+                        <button id="btn-toggle-cam" class="p-3 bg-slate-900/80 hover:bg-slate-800 backdrop-blur rounded-xl text-white transition-colors border border-slate-700 shadow-lg">
+                            <i class="ph ph-camera text-xl" id="icon-cam"></i>
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+    </main>
+
+    <script>
+        // Sesuaikan path jika menggunakan path custom di server Node.js Anda
+        const socket = io({ path: '/live/socket.io' }); 
+
+        const rtcConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
+
+        // Elements
+        const els = {
+            screenJoin: document.getElementById('screen-join'),
+            screenCall: document.getElementById('screen-call'),
+            inputId: document.getElementById('input-room-id'),
+            btnJoin: document.getElementById('btn-join-room'),
+            btnLeave: document.getElementById('btn-leave'),
+            btnToggleMic: document.getElementById('btn-toggle-mic'),
+            btnToggleCam: document.getElementById('btn-toggle-cam'),
+            iconMic: document.getElementById('icon-mic'),
+            iconCam: document.getElementById('icon-cam'),
+            localVideo: document.getElementById('local-video'),
+            remoteVideo: document.getElementById('remote-video'),
+            displayRoomId: document.getElementById('display-room-id'),
+            callStatus: document.getElementById('call-status'),
+            remoteLoading: document.getElementById('remote-loading')
+        };
+
+        // State
+        let peerConnection;
+        let localStream;
+        let currentRoomId = '';
+        let isAudioMuted = false;
+        let isVideoOff = false;
+
+        // UI Event Listeners
+        els.inputId.addEventListener('input', (e) => {
+            const val = e.target.value.trim().toUpperCase();
+            e.target.value = val;
+            els.btnJoin.disabled = val.length < 3;
+        });
+
+        els.btnJoin.addEventListener('click', () => {
+            const roomId = els.inputId.value.trim();
+            if (roomId) joinRoom(roomId);
+        });
+
+        els.btnLeave.addEventListener('click', endCall);
+
+        els.btnToggleMic.addEventListener('click', () => {
+            if (!localStream) return;
+            isAudioMuted = !isAudioMuted;
+            localStream.getAudioTracks()[0].enabled = !isAudioMuted;
+            
+            els.iconMic.className = isAudioMuted ? 'ph ph-microphone-slash text-xl text-red-500' : 'ph ph-microphone text-xl';
+            els.btnToggleMic.classList.toggle('border-red-500/50', isAudioMuted);
+        });
+
+        els.btnToggleCam.addEventListener('click', () => {
+            if (!localStream) return;
+            isVideoOff = !isVideoOff;
+            localStream.getVideoTracks()[0].enabled = !isVideoOff;
+            
+            els.iconCam.className = isVideoOff ? 'ph ph-camera-slash text-xl text-red-500' : 'ph ph-camera text-xl';
+            els.btnToggleCam.classList.toggle('border-red-500/50', isVideoOff);
+        });
+
+        // WebRTC & Socket Logic
+        async function joinRoom(roomId) {
+            currentRoomId = roomId;
+            
+            // Switch UI
+            els.screenJoin.classList.add('hidden');
+            els.screenCall.classList.remove('hidden');
+            els.btnLeave.classList.remove('hidden');
+            els.btnLeave.classList.add('flex');
+            els.displayRoomId.textContent = currentRoomId;
+
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                els.localVideo.srcObject = localStream;
+                
+                socket.emit('join-room', currentRoomId);
+                els.callStatus.textContent = 'Menunggu partner...';
+                
+            } catch (error) {
+                console.error('Kamera/Mic error:', error);
+                alert('Gagal mengakses Kamera atau Mikrofon!');
+                endCall();
+            }
+        }
+
+        function createPeerConnection() {
+            peerConnection = new RTCPeerConnection(rtcConfig);
+
+            // Tambahkan track lokal ke koneksi
+            localStream.getTracks().forEach(track => {
+                peerConnection.addTrack(track, localStream);
+            });
+
+            // Terima track remote
+            peerConnection.ontrack = (event) => {
+                els.remoteVideo.srcObject = event.streams[0];
+                els.remoteLoading.classList.add('hidden');
+                els.callStatus.textContent = 'Terhubung!';
+                els.callStatus.classList.replace('text-slate-300', 'text-emerald-400');
+            };
+
+            // Kirim ICE Candidate
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.emit('ice-candidate', { roomId: currentRoomId, candidate: event.candidate });
+                }
+            };
+            
+            // Handle koneksi terputus dari sisi Peer
+            peerConnection.onconnectionstatechange = () => {
+                if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed') {
+                    resetRemoteVideo();
+                }
+            };
+        }
+
+        // Socket Listeners
+        // 1. Partner baru bergabung (Kita sebagai inisiator membuat Offer)
+        socket.on('user-joined', async () => {
+            els.callStatus.textContent = 'Partner bergabung, menghubungkan...';
+            createPeerConnection();
+            
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            socket.emit('offer', { roomId: currentRoomId, offer });
+        });
+
+        // 2. Menerima Offer (Kita membuat Answer)
+        socket.on('offer', async (offer) => {
+            if (!peerConnection) createPeerConnection();
+            
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            
+            socket.emit('answer', { roomId: currentRoomId, answer });
+        });
+
+        // 3. Menerima Answer
+        socket.on('answer', async (answer) => {
+            if (peerConnection) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+            }
+        });
+
+        // 4. Bertukar ICE Candidates
+        socket.on('ice-candidate', async (candidate) => {
+            if (peerConnection) {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            }
+        });
+        
+        // (Opsional) Jika server mengirimkan event saat user leave
+        socket.on('user-left', () => {
+            resetRemoteVideo();
+        });
+
+        function resetRemoteVideo() {
+            els.remoteVideo.srcObject = null;
+            els.remoteLoading.classList.remove('hidden');
+            els.callStatus.textContent = 'Partner terputus. Menunggu...';
+            els.callStatus.classList.replace('text-emerald-400', 'text-slate-300');
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+        }
+
+        function endCall() {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            
+            socket.emit('leave-room', currentRoomId);
+            
+            // Reset UI
+            els.screenCall.classList.add('hidden');
+            els.btnLeave.classList.add('hidden');
+            els.btnLeave.classList.remove('flex');
+            els.screenJoin.classList.remove('hidden');
+            els.inputId.value = '';
+            els.btnJoin.disabled = true;
+            
+            els.localVideo.srcObject = null;
+            els.remoteVideo.srcObject = null;
+            els.remoteLoading.classList.remove('hidden');
+            els.callStatus.textContent = 'Menunggu partner bergabung...';
+            
+            // Reset button states
+            isAudioMuted = false;
+            isVideoOff = false;
+            els.iconMic.className = 'ph ph-microphone text-xl';
+            els.iconCam.className = 'ph ph-camera text-xl';
+            els.btnToggleMic.classList.remove('border-red-500/50');
+            els.btnToggleCam.classList.remove('border-red-500/50');
+        }
+
+    </script>
+</body>
+</html>

@@ -30,6 +30,11 @@ app.get('/live', (req, res) => {
     // nanti Javascript di client yang akan membaca ID dari URL
     res.sendFile(path.join(__dirname,  './public/index.html'));
 });
+app.get('/private', (req, res) => {
+    // Kita tetap mengirimkan file index.html yang sama,
+    // nanti Javascript di client yang akan membaca ID dari URL
+    res.sendFile(path.join(__dirname, './public/call.html'));
+});
 
 io.on('connection', (socket) => {
     console.log(`User terhubung: ${socket.id}`);
