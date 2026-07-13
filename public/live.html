@@ -79,7 +79,7 @@
         // Menghubungkan ke server Socket.io
         // Jika server Node berjalan di port 3000, ubah menjadi 'http://localhost:3000'
         // Jika file HTML dijalankan dari server Node yang sama, cukup kosongkan `io()`
-        const socket = io('http://localhost:3000'); 
+        const socket = io(); 
 
         // State & Variabel
         let peerConnection;
