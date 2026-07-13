@@ -47,6 +47,7 @@ io.on('connection', (socket) => {
         // Memberitahu semua orang di room tersebut (kecuali pengirim) bahwa ada penonton baru
         // Ini memicu penyiar untuk membuat 'Offer'
         socket.to(roomId).emit('viewer-joined');
+        socket.to(roomId).emit('user-joined', socket.id);
     });
 
     // Meneruskan Offer (SDP) dari Penyiar ke Penonton

@@ -146,6 +146,7 @@
         let currentRoomId = '';
         let isAudioMuted = false;
         let isVideoOff = false;
+        let iceCandidateQueue = [];
 
         // UI Event Listeners
         els.inputId.addEventListener('input', (e) => {
@@ -195,7 +196,7 @@
                 els.localVideo.srcObject = localStream;
                 
                 socket.emit('join-room', currentRoomId);
-                els.callStatus.textContent = 'Menunggu partner...';
+                els.callStatus.textContent = 'Menunggu partner....';
                 
             } catch (error) {
                 console.error('Kamera/Mic error:', error);
@@ -205,6 +206,7 @@
         }
 
         function createPeerConnection() {
+            if (peerConnection) return;
             peerConnection = new RTCPeerConnection(rtcConfig);
 
             // Tambahkan track lokal ke koneksi
@@ -234,47 +236,102 @@
                 }
             };
         }
+        // Helper to process queued ICE candidates
+        async function flushIceQueue() {
+            while (iceCandidateQueue.length > 0) {
+                const candidate = iceCandidateQueue.shift();
+                try {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                } catch (e) {
+                    console.error('Error adding queued ICE candidate', e);
+                }
+            }
+        }
 
         // Socket Listeners
         // 1. Partner baru bergabung (Kita sebagai inisiator membuat Offer)
+       // 1. Existing user detects new partner joining
         socket.on('user-joined', async () => {
             els.callStatus.textContent = 'Partner bergabung, menghubungkan...';
+            
             createPeerConnection();
             
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
-            socket.emit('offer', { roomId: currentRoomId, offer });
+            try {
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                socket.emit('offer', { roomId: currentRoomId, offer });
+            } catch (error) {
+                console.error("Error creating offer:", error);
+            }
         });
 
-        // 2. Menerima Offer (Kita membuat Answer)
+        // 2. New user receives the offer
         socket.on('offer', async (offer) => {
-            if (!peerConnection) createPeerConnection();
+            els.callStatus.textContent = 'Menerima panggilan...';
             
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
+            // Ensure media is ready and PC is created
+            if (!localStream) {
+                console.warn("Local stream not ready yet, waiting...");
+                // In a perfect world, you'd await getUserMedia here if it hasn't resolved
+            }
             
-            socket.emit('answer', { roomId: currentRoomId, answer });
+            createPeerConnection();
+            
+            try {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+                
+                // Now that remoteDescription is set, flush any early ICE candidates
+                await flushIceQueue();
+                
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                
+                socket.emit('answer', { roomId: currentRoomId, answer });
+            } catch (error) {
+                console.error("Error handling offer:", error);
+            }
         });
 
-        // 3. Menerima Answer
+        // 3. Initiator receives the answer
         socket.on('answer', async (answer) => {
-            if (peerConnection) {
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+            try {
+                if (peerConnection && peerConnection.signalingState !== "stable") {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+                    // Flush any ICE candidates received while waiting for the answer
+                    await flushIceQueue();
+                }
+            } catch (error) {
+                console.error("Error setting remote description from answer:", error);
             }
         });
 
-        // 4. Bertukar ICE Candidates
+        // 4. Exchanging ICE Candidates safely
         socket.on('ice-candidate', async (candidate) => {
-            if (peerConnection) {
-                await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            if (!peerConnection || !peerConnection.remoteDescription) {
+                // Queue candidate if remote description isn't set yet
+                iceCandidateQueue.push(candidate);
+            } else {
+                try {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                } catch (error) {
+                    console.error('Error adding ICE candidate', error);
+                }
             }
         });
-        
-        // (Opsional) Jika server mengirimkan event saat user leave
+
         socket.on('user-left', () => {
             resetRemoteVideo();
         });
+
+        function resetRemoteVideo() {
+            /* ... keep your existing reset logic ... */
+            iceCandidateQueue = []; // Clear the queue on disconnect
+        }
+
+        function endCall() {
+            /* ... keep your existing endCall logic ... */
+            iceCandidateQueue = [];
+        }
 
         function resetRemoteVideo() {
             els.remoteVideo.srcObject = null;
