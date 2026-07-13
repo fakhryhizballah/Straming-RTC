@@ -71,6 +71,10 @@
                     <span class="text-sm text-slate-500">ROOM:</span>
                     <span id="display-room-id" class="font-mono font-bold text-blue-400 tracking-widest">---</span>
                 </div>
+                <div id="ping-container" class="hidden items-center gap-1.5 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 transition-colors">
+                    <i id="ping-icon" class="ph-fill ph-wifi-high text-slate-500"></i>
+                    <span id="ping-text" class="text-xs font-mono font-bold text-slate-400">-- ms</span>
+                </div>
             </div>
 
             <!-- Video Grid -->
@@ -378,6 +382,82 @@
             els.btnToggleCam.classList.remove('border-red-500/50');
         }
 
+    </script>
+    <script>
+        // Tambahkan di bagian State
+let latencyInterval;
+
+// Tambahkan elemen ke object els
+els.pingContainer = document.getElementById('ping-container');
+els.pingText = document.getElementById('ping-text');
+els.pingIcon = document.getElementById('ping-icon');
+
+// Fungsi untuk mulai memonitor latensi
+function startLatencyMonitor() {
+    els.pingContainer.classList.remove('hidden');
+    els.pingContainer.classList.add('flex');
+    
+    // Hentikan interval sebelumnya jika ada
+    if (latencyInterval) clearInterval(latencyInterval);
+    
+    latencyInterval = setInterval(async () => {
+        if (!peerConnection) return;
+        
+        try {
+            const stats = await peerConnection.getStats(null);
+            
+            stats.forEach(report => {
+                // Kita cari report dari kandidat jaringan yang sukses terhubung
+                if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+                    const rtt = report.currentRoundTripTime;
+                    
+                    if (rtt !== undefined) {
+                        // currentRoundTripTime mengembalikan nilai dalam satuan detik, kita ubah ke ms
+                        const pingMs = Math.round(rtt * 1000);
+                        updatePingUI(pingMs);
+                    }
+                }
+            });
+        } catch (error) {
+            console.error("Gagal mengambil WebRTC stats:", error);
+        }
+    }, 2000); // Update setiap 2 detik agar tidak membebani browser
+}
+startLatencyMonitor()
+
+// Fungsi untuk update warna UI berdasarkan kualitas jaringan
+function updatePingUI(ping) {
+    console.log("Ping:", ping, "ms");
+    els.pingText.textContent = `${ping} ms`;
+    
+    // Reset classes
+    els.pingIcon.className = 'ph-fill ph-wifi-high';
+    els.pingText.className = 'text-xs font-mono font-bold';
+    
+    if (ping < 100) {
+        // Hijau: Sangat Bagus
+        els.pingIcon.classList.add('text-emerald-500');
+        els.pingText.classList.add('text-emerald-500');
+    } else if (ping < 250) {
+        // Kuning: Lumayan / Warning
+        els.pingIcon.classList.add('text-yellow-500');
+        els.pingText.classList.add('text-yellow-500');
+    } else {
+        // Merah: Buruk
+        els.pingIcon.className = 'ph-fill ph-wifi-low text-red-500';
+        els.pingText.classList.add('text-red-500');
+    }
+}
+
+function stopLatencyMonitor() {
+    if (latencyInterval) {
+        clearInterval(latencyInterval);
+        latencyInterval = null;
+    }
+    els.pingContainer.classList.add('hidden');
+    els.pingContainer.classList.remove('flex');
+    els.pingText.textContent = '-- ms';
+}
     </script>
 </body>
 </html>
