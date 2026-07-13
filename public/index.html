@@ -47,9 +47,11 @@
                 </div>
                 <h2 class="text-2xl font-bold mb-2">Jadi Penyiar</h2>
                 <p class="text-slate-400 mb-6">Buka kamera Anda dan bagikan ID ruangan agar orang lain dapat menonton secara langsung.</p>
-                <button id="btn-start-broadcast" class="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition-colors shadow-lg shadow-blue-900/20">
+                   <input type="text" id="input-custom-room-id" placeholder="Buat ID Custom (Opsional)" title="Kosongkan untuk ID acak" />
+                    <button id="btn-start-broadcast">Mulai Siaran</button>
+                <!-- <button id="btn-start-broadcast" class="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition-colors shadow-lg shadow-blue-900/20">
                     Mulai Siaran
-                </button>
+                </button> -->
             </div>
 
             <!-- Card Penonton -->
@@ -85,8 +87,19 @@
                         <button id="btn-copy-id" class="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors"><i class="ph ph-copy text-lg"></i></button>
                     </div>
                 </div>
-                <div class="relative aspect-video bg-black rounded-xl overflow-hidden border border-slate-800">
-                    <video id="local-video" autoplay playsinline muted class="w-full h-full object-cover"></video>
+                <div class="relative aspect-video bg-black rounded-xl overflow-hidden border border-slate-800 group">
+                    <!-- Mengubah object-cover menjadi object-contain agar orientasi portrait/landscape dari mobile tidak terpotong (crop) -->
+                    <video id="local-video" autoplay playsinline muted class="w-full h-full object-contain bg-slate-950"></video>
+                    
+                    <!-- Kontrol Kamera Tambahan -->
+                    <div class="absolute bottom-4 right-4 flex gap-3 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                        <button id="btn-toggle-flash" class="hidden p-3 bg-slate-900/80 hover:bg-slate-800 backdrop-blur rounded-full text-slate-300 hover:text-yellow-400 transition-colors border border-slate-700 shadow-lg" title="Toggle Flash">
+                            <i class="ph ph-lightning text-xl" id="icon-flash"></i>
+                        </button>
+                        <button id="btn-flip-camera" class="p-3 bg-slate-900/80 hover:bg-slate-800 backdrop-blur rounded-full text-slate-300 hover:text-white transition-colors border border-slate-700 shadow-lg" title="Flip Camera">
+                            <i class="ph ph-camera-rotate text-xl"></i>
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -114,11 +127,7 @@
     </main>
 
     <script>
-        // Menghubungkan ke server Socket.io
-        // Jika server Node berjalan di port 3000, ubah menjadi 'http://localhost:3000'
-        // Jika file HTML dijalankan dari server Node yang sama, cukup kosongkan `io()`
-        // const socket = io(''); 
-           const socket = io({
+        const socket = io({
             path: '/live/socket.io'
         });
 
@@ -126,7 +135,11 @@
         let peerConnection;
         let localStream;
         let currentRoomId = '';
-        let currentMode = null; // 'broadcaster' atau 'viewer'
+        let currentMode = null;
+        
+        // State Kamera
+        let currentFacingMode = 'user'; // 'user' (depan) atau 'environment' (belakang)
+        let isFlashOn = false;
 
         const rtcConfig = {
             iceServers: [
@@ -143,6 +156,7 @@
             btnStartBroadcast: document.getElementById('btn-start-broadcast'),
             btnJoinView: document.getElementById('btn-join-view'),
             inputJoinId: document.getElementById('input-join-id'),
+            inputCustomRoomId: document.getElementById('input-custom-room-id'), /
             localVideo: document.getElementById('local-video'),
             remoteVideo: document.getElementById('remote-video'),
             broadcasterStatus: document.getElementById('broadcaster-status'),
@@ -150,7 +164,10 @@
             displayRoomId: document.getElementById('display-room-id'),
             displayJoinId: document.getElementById('display-join-id'),
             remoteVideoLoading: document.getElementById('remote-video-loading'),
-            btnCopyId: document.getElementById('btn-copy-id')
+            btnCopyId: document.getElementById('btn-copy-id'),
+            btnFlipCamera: document.getElementById('btn-flip-camera'),
+            btnToggleFlash: document.getElementById('btn-toggle-flash'),
+            iconFlash: document.getElementById('icon-flash')
         };
 
         function showScreen(mode) {
@@ -187,62 +204,103 @@
             els.remoteVideo.srcObject = null;
             els.remoteVideoLoading.classList.remove('hidden');
             
-            // Hapus event listener socket spesifik agar tidak dobel
+            // Reset state kamera
+            currentFacingMode = 'user';
+            isFlashOn = false;
+            updateFlashUI();
+            els.btnToggleFlash.classList.add('hidden');
+            
             socket.off('viewer-joined');
             socket.off('offer');
             socket.off('answer');
             socket.off('ice-candidate');
         }
 
+        // Cek dukungan flash pada track video yang sedang aktif
+        function checkFlashSupport(videoTrack) {
+            try {
+                const capabilities = videoTrack.getCapabilities();
+                if (capabilities.torch) {
+                    els.btnToggleFlash.classList.remove('hidden');
+                } else {
+                    els.btnToggleFlash.classList.add('hidden');
+                    isFlashOn = false;
+                }
+                updateFlashUI();
+            } catch (error) {
+                console.warn("API getCapabilities tidak didukung di browser ini", error);
+                els.btnToggleFlash.classList.add('hidden');
+            }
+        }
+
+        function updateFlashUI() {
+            if (isFlashOn) {
+                els.iconFlash.classList.replace('ph-lightning', 'ph-fill');
+                els.btnToggleFlash.classList.add('text-yellow-400');
+                els.btnToggleFlash.classList.remove('text-slate-300');
+            } else {
+                els.iconFlash.classList.replace('ph-fill', 'ph-lightning');
+                els.btnToggleFlash.classList.remove('text-yellow-400');
+                els.btnToggleFlash.classList.add('text-slate-300');
+            }
+        }
+
+        async function getMediaStream(facingMode) {
+            return await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: facingMode }, 
+                audio: true 
+            });
+        }
+
         async function startBroadcasting() {
             cleanup();
             showScreen('broadcaster');
+               let customId = els.inputCustomRoomId.value.trim().toUpperCase();
             
-            currentRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+            // Opsional: Hanya izinkan huruf dan angka agar URL aman
+            customId = customId.replace(/[^A-Z0-9]/g, '');
+
+            currentRoomId = customId || Math.random().toString(36).substring(2, 8).toUpperCase();
+            
+            // currentRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
             els.displayRoomId.textContent = currentRoomId;
             els.broadcasterStatus.textContent = 'Membuka kamera...';
 
             try {
-                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localStream = await getMediaStream(currentFacingMode);
                 els.localVideo.srcObject = localStream;
                 
-                // Mendaftarkan ruangan ke server
+                checkFlashSupport(localStream.getVideoTracks()[0]);
+                
                 socket.emit('join-room', currentRoomId);
                 els.broadcasterStatus.textContent = 'Menunggu penonton bergabung...';
 
-                // Listener untuk WebSockets
                 socket.on('viewer-joined', async () => {
                     els.broadcasterStatus.textContent = 'Penonton bergabung, menyiapkan koneksi...';
                     
-                    // Buat koneksi WebRTC baru untuk penonton ini
                     peerConnection = new RTCPeerConnection(rtcConfig);
 
                     localStream.getTracks().forEach(track => {
                         peerConnection.addTrack(track, localStream);
                     });
 
-                    // Kirim ICE Candidate ke penonton
                     peerConnection.onicecandidate = (event) => {
                         if (event.candidate) {
                             socket.emit('ice-candidate', { roomId: currentRoomId, candidate: event.candidate });
                         }
                     };
 
-                    // Buat Offer
                     const offer = await peerConnection.createOffer();
                     await peerConnection.setLocalDescription(offer);
                     
-                    // Kirim offer via server ke penonton
                     socket.emit('offer', { roomId: currentRoomId, offer });
                 });
 
-                // Menerima Answer dari penonton
                 socket.on('answer', async (answer) => {
                     await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
                     els.broadcasterStatus.textContent = 'Terhubung dengan penonton!';
                 });
 
-                // Menerima ICE Candidate dari penonton
                 socket.on('ice-candidate', async (candidate) => {
                     if (peerConnection) {
                         await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
@@ -255,7 +313,73 @@
             }
         }
 
+        // FUNGSI FLIP CAMERA
+        async function flipCamera() {
+            if (!localStream) return;
+            els.btnFlipCamera.disabled = true;
+
+            currentFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
+            
+            // Matikan track video lama
+            const oldVideoTrack = localStream.getVideoTracks()[0];
+            if (oldVideoTrack) oldVideoTrack.stop();
+
+            try {
+                // Minta stream baru (hanya video agar audio tidak putus)
+                const newStream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: currentFacingMode },
+                    audio: false
+                });
+
+                const newVideoTrack = newStream.getVideoTracks()[0];
+                
+                // Ganti track di local stream
+                localStream.removeTrack(oldVideoTrack);
+                localStream.addTrack(newVideoTrack);
+                els.localVideo.srcObject = localStream;
+
+                // Seamless ganti track di koneksi WebRTC jika penonton sedang terhubung
+                if (peerConnection) {
+                    const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+                    if (sender) {
+                        sender.replaceTrack(newVideoTrack);
+                    }
+                }
+
+                // Cek ulang apakah kamera baru punya flash
+                isFlashOn = false;
+                checkFlashSupport(newVideoTrack);
+
+            } catch (error) {
+                console.error("Gagal membalik kamera:", error);
+                // Fallback jika gagal (misal PC tidak punya kamera belakang)
+                currentFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
+            } finally {
+                els.btnFlipCamera.disabled = false;
+            }
+        }
+
+        // FUNGSI TOGGLE FLASH
+        async function toggleFlash() {
+            if (!localStream) return;
+            const videoTrack = localStream.getVideoTracks()[0];
+            
+            try {
+                const capabilities = videoTrack.getCapabilities();
+                if (capabilities.torch) {
+                    isFlashOn = !isFlashOn;
+                    await videoTrack.applyConstraints({
+                        advanced: [{ torch: isFlashOn }]
+                    });
+                    updateFlashUI();
+                }
+            } catch (error) {
+                console.error("Gagal menyalakan flash:", error);
+            }
+        }
+
         function startViewing(idToJoin) {
+            // ... Logika Viewer Tetap Sama Seperti Sebelumnya ...
             cleanup();
             showScreen('viewer');
             
@@ -263,26 +387,22 @@
             els.displayJoinId.textContent = currentRoomId;
             els.viewerStatus.textContent = 'Menghubungkan ke server...';
 
-            // Memberitahu server bahwa kita ingin bergabung
             socket.emit('join-room', currentRoomId);
 
             peerConnection = new RTCPeerConnection(rtcConfig);
 
-            // Tampilkan stream saat diterima
             peerConnection.ontrack = (event) => {
                 els.remoteVideo.srcObject = event.streams[0];
                 els.remoteVideoLoading.classList.add('hidden');
                 els.viewerStatus.textContent = 'Menerima siaran langsung.';
             };
 
-            // Kirim ICE Candidate kita ke penyiar
             peerConnection.onicecandidate = (event) => {
                 if (event.candidate) {
                     socket.emit('ice-candidate', { roomId: currentRoomId, candidate: event.candidate });
                 }
             };
 
-            // Menerima Offer dari penyiar, dan membuat Answer
             socket.on('offer', async (offer) => {
                 els.viewerStatus.textContent = 'Menerima data koneksi...';
                 
@@ -290,11 +410,9 @@
                 const answer = await peerConnection.createAnswer();
                 await peerConnection.setLocalDescription(answer);
                 
-                // Kirim answer kembali ke penyiar
                 socket.emit('answer', { roomId: currentRoomId, answer });
             });
 
-            // Menerima ICE Candidate dari penyiar
             socket.on('ice-candidate', async (candidate) => {
                 if (peerConnection) {
                     await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
@@ -302,7 +420,10 @@
             });
         }
 
+        // Event Listeners
         els.btnStartBroadcast.addEventListener('click', startBroadcasting);
+        els.btnFlipCamera.addEventListener('click', flipCamera);
+        els.btnToggleFlash.addEventListener('click', toggleFlash);
 
         els.inputJoinId.addEventListener('input', (e) => {
             const val = e.target.value.trim();
