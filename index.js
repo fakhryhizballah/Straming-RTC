@@ -12,9 +12,9 @@ const io = new Server(server, {
     cors: {
         origin: "*",
         methods: ["GET", "POST"]
-    }
+    },
+    path: '/live/socket.io'
 });
-
 
 // Menyajikan file statis (client) jika index.html diletakkan di folder 'public'
 app.use(express.static('public'));
