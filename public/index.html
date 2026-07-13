@@ -48,7 +48,7 @@
                 <h2 class="text-2xl font-bold mb-2">Jadi Penyiar</h2>
                 <p class="text-slate-400 mb-6">Buka kamera Anda dan bagikan ID ruangan agar orang lain dapat menonton secara langsung.</p>
                  <div class="flex flex-col gap-3">
-                     <input type="text" id="input-custom-room-id" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-center tracking-widest font-mono uppercase" placeholder="Buat ID Custom (Opsional)" title="Kosongkan untuk ID acak" />
+                     <input type="text" id="input-custom-room-id" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-center tracking-widest font-mono uppercase" placeholder="Buat ID Custom (Opsional)" title="Kosongkan untuk ID acak" />
                     <button id="btn-start-broadcast" class="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition-colors shadow-lg shadow-blue-900/20">
                         Mulai Siaran
                     </button>
@@ -146,7 +146,8 @@
         const rtcConfig = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun.services.mozilla.com' }
             ]
         };
 
