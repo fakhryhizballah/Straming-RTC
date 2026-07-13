@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StreamLokal - WebRTC Custom Server</title>
+    
+    <!-- Tailwind CSS & Phosphor Icons -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    
+    <!-- Mengimpor Socket.io Client -->
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    
+    <style>
+        .hidden { display: none !important; }
+        .fade-in { animation: fadeIn 0.5s ease-in-out; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-blue-500/30">
+
+    <!-- Header -->
+    <header id="app-header" class="p-4 border-b border-slate-800 bg-slate-900/50 backdrop-blur-sm sticky top-0 z-10">
+        <div class="max-w-4xl mx-auto flex justify-between items-center">
+            <div class="flex items-center gap-2">
+                <i class="ph-fill ph-video-camera text-blue-500 text-2xl"></i>
+                <h1 class="text-xl font-bold tracking-tight">StreamLokal <span class="text-xs bg-blue-600/20 text-blue-400 px-2 py-1 rounded-full ml-2">Socket.io</span></h1>
+            </div>
+            <button id="btn-back" class="hidden items-center gap-2 px-3 py-1.5 text-sm rounded-lg bg-slate-800 hover:bg-slate-700 transition-colors">
+                <i class="ph ph-sign-out"></i> Kembali
+            </button>
+        </div>
+    </header>
+
+    <main id="app-main" class="max-w-4xl mx-auto p-4 py-8">
+        
+        <!-- Layar Utama -->
+        <div id="screen-home" class="flex flex-col md:flex-row gap-6 mt-10 fade-in">
+            <!-- Card Penyiar -->
+            <div class="flex-1 p-8 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-800 border border-slate-700 hover:border-blue-500/50 transition-all text-center group">
+                <div class="w-16 h-16 mx-auto bg-blue-500/20 rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                    <i class="ph-fill ph-camera text-blue-400 text-3xl"></i>
+                </div>
+                <h2 class="text-2xl font-bold mb-2">Jadi Penyiar</h2>
+                <p class="text-slate-400 mb-6">Buka kamera Anda dan bagikan ID ruangan agar orang lain dapat menonton secara langsung.</p>
+                <button id="btn-start-broadcast" class="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition-colors shadow-lg shadow-blue-900/20">
+                    Mulai Siaran
+                </button>
+            </div>
+
+            <!-- Card Penonton -->
+            <div class="flex-1 p-8 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-800 border border-slate-700 hover:border-emerald-500/50 transition-all text-center group">
+                <div class="w-16 h-16 mx-auto bg-emerald-500/20 rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                    <i class="ph-fill ph-television text-emerald-400 text-3xl"></i>
+                </div>
+                <h2 class="text-2xl font-bold mb-2">Tonton Siaran</h2>
+                <p class="text-slate-400 mb-6">Masukkan ID ruangan dari penyiar untuk menonton video langsung mereka.</p>
+                <div class="flex flex-col gap-3">
+                    <input type="text" id="input-join-id" placeholder="Masukkan ID Ruangan (Misal: X9B2A)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-center tracking-widest font-mono uppercase" />
+                    <button id="btn-join-view" disabled class="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-colors shadow-lg shadow-emerald-900/20">
+                        Hubungkan
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Layar Penyiar -->
+        <div id="screen-broadcaster" class="hidden fade-in">
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6 shadow-xl">
+                <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4 gap-4">
+                    <div>
+                        <h2 class="text-xl font-bold flex items-center gap-2">
+                            <span class="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse"></span>
+                            Siaran Langsung
+                        </h2>
+                        <p id="broadcaster-status" class="text-sm text-slate-400 mt-1">Mempersiapkan...</p>
+                    </div>
+                    <div class="bg-slate-950 px-4 py-2 rounded-xl flex items-center gap-3 border border-slate-800">
+                        <span class="text-sm text-slate-400">Room ID:</span>
+                        <span id="display-room-id" class="font-mono font-bold text-blue-400 text-lg tracking-widest">---</span>
+                        <button id="btn-copy-id" class="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors"><i class="ph ph-copy text-lg"></i></button>
+                    </div>
+                </div>
+                <div class="relative aspect-video bg-black rounded-xl overflow-hidden border border-slate-800">
+                    <video id="local-video" autoplay playsinline muted class="w-full h-full object-cover"></video>
+                </div>
+            </div>
+        </div>
+
+        <!-- Layar Penonton -->
+        <div id="screen-viewer" class="hidden fade-in">
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-6 shadow-xl">
+                <div class="mb-4">
+                    <h2 class="text-xl font-bold flex items-center gap-2">
+                        <i class="ph-fill ph-television text-emerald-500"></i>
+                        Menonton Siaran: <span id="display-join-id" class="font-mono text-emerald-400 ml-1 tracking-widest">---</span>
+                    </h2>
+                    <p id="viewer-status" class="text-sm text-slate-400 mt-1">Menghubungkan...</p>
+                </div>
+                <div class="relative aspect-video bg-black rounded-xl overflow-hidden border border-slate-800">
+                    <video id="remote-video" autoplay playsinline class="w-full h-full object-contain bg-slate-950"></video>
+                    <div id="remote-video-loading" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+                        <i class="ph ph-spinner-gap text-4xl text-emerald-500 animate-spin mb-4"></i>
+                        <p class="text-slate-300 font-medium">Menunggu penyiar...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <script>
+        // Menghubungkan ke server Socket.io
+        // Jika server Node berjalan di port 3000, ubah menjadi 'http://localhost:3000'
+        // Jika file HTML dijalankan dari server Node yang sama, cukup kosongkan `io()`
+        const socket = io('http://localhost:3000'); 
+
+        // State & Variabel
+        let peerConnection;
+        let localStream;
+        let currentRoomId = '';
+        let currentMode = null; // 'broadcaster' atau 'viewer'
+
+        const rtcConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
+
+        const els = {
+            screenHome: document.getElementById('screen-home'),
+            screenBroadcaster: document.getElementById('screen-broadcaster'),
+            screenViewer: document.getElementById('screen-viewer'),
+            btnBack: document.getElementById('btn-back'),
+            btnStartBroadcast: document.getElementById('btn-start-broadcast'),
+            btnJoinView: document.getElementById('btn-join-view'),
+            inputJoinId: document.getElementById('input-join-id'),
+            localVideo: document.getElementById('local-video'),
+            remoteVideo: document.getElementById('remote-video'),
+            broadcasterStatus: document.getElementById('broadcaster-status'),
+            viewerStatus: document.getElementById('viewer-status'),
+            displayRoomId: document.getElementById('display-room-id'),
+            displayJoinId: document.getElementById('display-join-id'),
+            remoteVideoLoading: document.getElementById('remote-video-loading'),
+            btnCopyId: document.getElementById('btn-copy-id')
+        };
+
+        function showScreen(mode) {
+            currentMode = mode;
+            els.screenHome.classList.add('hidden');
+            els.screenBroadcaster.classList.add('hidden');
+            els.screenViewer.classList.add('hidden');
+
+            if (mode === 'broadcaster') {
+                els.screenBroadcaster.classList.remove('hidden');
+                els.btnBack.classList.remove('hidden');
+                els.btnBack.classList.add('flex');
+            } else if (mode === 'viewer') {
+                els.screenViewer.classList.remove('hidden');
+                els.btnBack.classList.remove('hidden');
+                els.btnBack.classList.add('flex');
+            } else {
+                els.screenHome.classList.remove('hidden');
+                els.btnBack.classList.add('hidden');
+                els.btnBack.classList.remove('flex');
+            }
+        }
+
+        function cleanup() {
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            els.localVideo.srcObject = null;
+            els.remoteVideo.srcObject = null;
+            els.remoteVideoLoading.classList.remove('hidden');
+            
+            // Hapus event listener socket spesifik agar tidak dobel
+            socket.off('viewer-joined');
+            socket.off('offer');
+            socket.off('answer');
+            socket.off('ice-candidate');
+        }
+
+        async function startBroadcasting() {
+            cleanup();
+            showScreen('broadcaster');
+            
+            currentRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+            els.displayRoomId.textContent = currentRoomId;
+            els.broadcasterStatus.textContent = 'Membuka kamera...';
+
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                els.localVideo.srcObject = localStream;
+                
+                // Mendaftarkan ruangan ke server
+                socket.emit('join-room', currentRoomId);
+                els.broadcasterStatus.textContent = 'Menunggu penonton bergabung...';
+
+                // Listener untuk WebSockets
+                socket.on('viewer-joined', async () => {
+                    els.broadcasterStatus.textContent = 'Penonton bergabung, menyiapkan koneksi...';
+                    
+                    // Buat koneksi WebRTC baru untuk penonton ini
+                    peerConnection = new RTCPeerConnection(rtcConfig);
+
+                    localStream.getTracks().forEach(track => {
+                        peerConnection.addTrack(track, localStream);
+                    });
+
+                    // Kirim ICE Candidate ke penonton
+                    peerConnection.onicecandidate = (event) => {
+                        if (event.candidate) {
+                            socket.emit('ice-candidate', { roomId: currentRoomId, candidate: event.candidate });
+                        }
+                    };
+
+                    // Buat Offer
+                    const offer = await peerConnection.createOffer();
+                    await peerConnection.setLocalDescription(offer);
+                    
+                    // Kirim offer via server ke penonton
+                    socket.emit('offer', { roomId: currentRoomId, offer });
+                });
+
+                // Menerima Answer dari penonton
+                socket.on('answer', async (answer) => {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+                    els.broadcasterStatus.textContent = 'Terhubung dengan penonton!';
+                });
+
+                // Menerima ICE Candidate dari penonton
+                socket.on('ice-candidate', async (candidate) => {
+                    if (peerConnection) {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                    }
+                });
+
+            } catch (err) {
+                console.error(err);
+                els.broadcasterStatus.textContent = 'Gagal mengakses kamera.';
+            }
+        }
+
+        function startViewing(idToJoin) {
+            cleanup();
+            showScreen('viewer');
+            
+            currentRoomId = idToJoin.toUpperCase();
+            els.displayJoinId.textContent = currentRoomId;
+            els.viewerStatus.textContent = 'Menghubungkan ke server...';
+
+            // Memberitahu server bahwa kita ingin bergabung
+            socket.emit('join-room', currentRoomId);
+
+            peerConnection = new RTCPeerConnection(rtcConfig);
+
+            // Tampilkan stream saat diterima
+            peerConnection.ontrack = (event) => {
+                els.remoteVideo.srcObject = event.streams[0];
+                els.remoteVideoLoading.classList.add('hidden');
+                els.viewerStatus.textContent = 'Menerima siaran langsung.';
+            };
+
+            // Kirim ICE Candidate kita ke penyiar
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.emit('ice-candidate', { roomId: currentRoomId, candidate: event.candidate });
+                }
+            };
+
+            // Menerima Offer dari penyiar, dan membuat Answer
+            socket.on('offer', async (offer) => {
+                els.viewerStatus.textContent = 'Menerima data koneksi...';
+                
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                
+                // Kirim answer kembali ke penyiar
+                socket.emit('answer', { roomId: currentRoomId, answer });
+            });
+
+            // Menerima ICE Candidate dari penyiar
+            socket.on('ice-candidate', async (candidate) => {
+                if (peerConnection) {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                }
+            });
+        }
+
+        els.btnStartBroadcast.addEventListener('click', startBroadcasting);
+
+        els.inputJoinId.addEventListener('input', (e) => {
+            const val = e.target.value.trim();
+            els.btnJoinView.disabled = val.length === 0;
+            e.target.value = val.toUpperCase();
+        });
+
+        els.btnJoinView.addEventListener('click', () => {
+            const id = els.inputJoinId.value.trim();
+            if (id) startViewing(id);
+        });
+
+        els.btnBack.addEventListener('click', () => {
+            cleanup();
+            showScreen(null);
+        });
+
+        els.btnCopyId.addEventListener('click', () => {
+            if (currentRoomId) {
+                const textArea = document.createElement("textarea");
+                textArea.value = currentRoomId;
+                document.body.appendChild(textArea);
+                textArea.select();
+                try {
+                    document.execCommand('copy');
+                    const icon = els.btnCopyId.querySelector('i');
+                    icon.classList.replace('ph-copy', 'ph-check');
+                    icon.classList.add('text-emerald-500');
+                    setTimeout(() => {
+                        icon.classList.replace('ph-check', 'ph-copy');
+                        icon.classList.remove('text-emerald-500');
+                    }, 2000);
+                } catch (err) {}
+                document.body.removeChild(textArea);
+            }
+        });
+
+    </script>
+</body>
+</html>
