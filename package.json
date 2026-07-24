@@ -11,6 +11,8 @@
   "description": "",
   "dependencies": {
     "express": "^5.2.1",
+    "mediasoup": "^3.19.3",
+    "mediasoup-client": "^3.18.7",
     "socket.io": "^4.8.3"
   }
 }

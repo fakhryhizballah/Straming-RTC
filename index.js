@@ -1,83 +1,179 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const path = require('path'); // Tambahkan modul path
+const path = require('path');
+const mediasoup = require('mediasoup');
 
 const app = express();
 const server = http.createServer(app);
 
-// Konfigurasi Socket.io
-// CORS diizinkan dari semua origin untuk keperluan development
 const io = new Server(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    },
+    cors: { origin: "*", methods: ["GET", "POST"] },
     path: '/live/socket.io'
 });
 
-// Menyajikan file statis (client) jika index.html diletakkan di folder 'public'
 app.use(express.static('public'));
 
 app.get('/live/:roomId', (req, res) => {
-    // Kita tetap mengirimkan file index.html yang sama,
-    // nanti Javascript di client yang akan membaca ID dari URL
-    res.sendFile(path.join(__dirname,  './public/live.html'));
+    res.sendFile(path.join(__dirname, './public/obs.html'));
 });
-
 app.get('/live', (req, res) => {
-    // Kita tetap mengirimkan file index.html yang sama,
-    // nanti Javascript di client yang akan membaca ID dari URL
-    res.sendFile(path.join(__dirname,  './public/index.html'));
+    res.sendFile(path.join(__dirname, './public/index.html'));
 });
 app.get('/private', (req, res) => {
-    // Kita tetap mengirimkan file index.html yang sama,
-    // nanti Javascript di client yang akan membaca ID dari URL
     res.sendFile(path.join(__dirname, './public/call.html'));
 });
+
+// --- Konfigurasi Mediasoup ---
+let worker;
+let router;
+
+const mediaCodecs = [
+    {
+        kind: 'audio',
+        mimeType: 'audio/opus',
+        clockRate: 48000,
+        channels: 2
+    },
+    {
+        kind: 'video',
+        mimeType: 'video/VP8',
+        clockRate: 90000,
+        parameters: { 'x-google-start-bitrate': 1000 }
+    }
+];
+
+async function createWorker() {
+    worker = await mediasoup.createWorker({
+        rtcMinPort: 10000,
+        rtcMaxPort: 10100
+    });
+
+    worker.on('died', () => {
+        console.error('Mediasoup worker died, exiting in 2 seconds... [PID:%d]', worker.pid);
+        setTimeout(() => process.exit(1), 2000);
+    });
+
+    // Untuk skala kecil, 1 router sudah cukup. Untuk multi-room dinamis, buat router per roomId.
+    router = await worker.createRouter({ mediaCodecs });
+}
+
+createWorker();
+
+// Simpan state transport, producer, dan consumer
+const transports = new Map();
+const producers = new Map();
+const consumers = new Map();
 
 io.on('connection', (socket) => {
     console.log(`User terhubung: ${socket.id}`);
 
-    // Saat penyiar atau penonton bergabung ke sebuah room (berdasarkan Room ID)
-    socket.on('join-room', (roomId) => {
-        socket.join(roomId);
-        console.log(`${socket.id} bergabung ke ruangan: ${roomId}`);
-
-        // Memberitahu semua orang di room tersebut (kecuali pengirim) bahwa ada penonton baru
-        // Ini memicu penyiar untuk membuat 'Offer'
-        socket.to(roomId).emit('viewer-joined');
-        socket.to(roomId).emit('user-joined', socket.id);
+    // Mengirim RTP Capabilities ke klien untuk inisialisasi Device
+    socket.on('getRouterRtpCapabilities', (callback) => {
+        callback(router.rtpCapabilities);
     });
 
-    // Meneruskan Offer (SDP) dari Penyiar ke Penonton
-    socket.on('offer', (data) => {
-        const { roomId, offer } = data;
-        socket.to(roomId).emit('offer', offer);
+    // Membuat WebRTC Transport di sisi server (untuk Send atau Receive)
+    socket.on('createWebRtcTransport', async (_, callback) => {
+        try {
+            const transport = await router.createWebRtcTransport({
+                listenIps: [{ ip: '0.0.0.0', announcedIp: '192.168.111.181' }], // Ganti announcedIp dengan IP Publik/Domain Anda
+                // listenIps: [{ ip: '0.0.0.0', announcedIp: '127.0.0.1' }], // Ganti announcedIp dengan IP Publik/Domain Anda
+                enableUdp: true,
+                enableTcp: true,
+                preferUdp: true,
+            });
+
+            transports.set(transport.id, transport);
+
+            transport.on('dtlsstatechange', dtlsState => {
+                if (dtlsState === 'closed') transport.close();
+            });
+
+            transport.on('close', () => console.log('Transport ditutup'));
+
+            callback({
+                params: {
+                    id: transport.id,
+                    iceParameters: transport.iceParameters,
+                    iceCandidates: transport.iceCandidates,
+                    dtlsParameters: transport.dtlsParameters
+                }
+            });
+        } catch (error) {
+            callback({ error: error.message });
+        }
     });
 
-    // Meneruskan Answer (SDP) dari Penonton kembali ke Penyiar
-    socket.on('answer', (data) => {
-        const { roomId, answer } = data;
-        socket.to(roomId).emit('answer', answer);
+    // Menghubungkan transport (DTLS handshake)
+    socket.on('transport-connect', async ({ dtlsParameters, transportId }) => {
+        const transport = transports.get(transportId);
+        await transport.connect({ dtlsParameters });
     });
 
-    // Meneruskan ICE Candidates untuk mencari jalur P2P terbaik
-    socket.on('ice-candidate', (data) => {
-        const { roomId, candidate } = data;
-        socket.to(roomId).emit('ice-candidate', candidate);
+    // Memulai stream (Penyiar)
+    socket.on('transport-produce', async ({ kind, rtpParameters, transportId }, callback) => {
+        const transport = transports.get(transportId);
+        const producer = await transport.produce({ kind, rtpParameters });
+
+        producers.set(producer.id, producer);
+
+        producer.on('transportclose', () => {
+            producer.close();
+        });
+
+        // Beritahu klien lain ada track baru
+        socket.broadcast.emit('new-producer', producer.id);
+
+        callback({ id: producer.id });
     });
 
-    // Menangani saat user terputus
+    // Menerima stream (Penonton)
+    socket.on('consume', async ({ rtpCapabilities, transportId, producerId }, callback) => {
+        try {
+            if (!router.canConsume({ producerId, rtpCapabilities })) {
+                console.error('Klien tidak dapat mengonsumsi stream ini');
+                return;
+            }
+
+            const transport = transports.get(transportId);
+            const consumer = await transport.consume({
+                producerId,
+                rtpCapabilities,
+                paused: true // Dimulai dalam keadaan paused, klien harus mengirim sinyal resume
+            });
+
+            consumers.set(consumer.id, consumer);
+
+            consumer.on('transportclose', () => {
+                consumer.close();
+            });
+
+            callback({
+                params: {
+                    id: consumer.id,
+                    producerId: consumer.producerId,
+                    kind: consumer.kind,
+                    rtpParameters: consumer.rtpParameters
+                }
+            });
+        } catch (error) {
+            callback({ error: error.message });
+        }
+    });
+
+    socket.on('consumer-resume', async ({ consumerId }) => {
+        const consumer = consumers.get(consumerId);
+        await consumer.resume();
+    });
+
     socket.on('disconnect', () => {
         console.log(`User terputus: ${socket.id}`);
-        // Anda bisa menambahkan logika tambahan di sini, 
-        // misalnya memberitahu room bahwa penyiar offline
+        // TODO: Bersihkan transport, producer, dan consumer milik user ini
     });
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Signaling server berjalan di http://localhost:${PORT}`);
-    console.log(`Pastikan Anda meletakkan index.html di folder 'public' (jika ingin diakses langsung)`);
+    console.log(`Signaling SFU berjalan di http://localhost:${PORT}`);
 });

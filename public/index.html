@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>StreamLokal - WebRTC Custom Server</title>
+    <title>StreamLokal - Mediasoup SFU</title>
     
     <!-- Tailwind CSS & Phosphor Icons -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -11,7 +11,8 @@
     
     <!-- Mengimpor Socket.io Client -->
     <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
-    
+    <!-- Mengimpor Mediasoup Client -->
+
     <style>
         .hidden { display: none !important; }
         .fade-in { animation: fadeIn 0.5s ease-in-out; }
@@ -28,7 +29,7 @@
         <div class="max-w-4xl mx-auto flex justify-between items-center">
             <div class="flex items-center gap-2">
                 <i class="ph-fill ph-video-camera text-blue-500 text-2xl"></i>
-                <h1 class="text-xl font-bold tracking-tight">StreamLokal <span class="text-xs bg-blue-600/20 text-blue-400 px-2 py-1 rounded-full ml-2">Socket.io</span></h1>
+                <h1 class="text-xl font-bold tracking-tight">StreamLokal <span class="text-xs bg-blue-600/20 text-blue-400 px-2 py-1 rounded-full ml-2">Mediasoup SFU</span></h1>
             </div>
             <button id="btn-back" class="hidden items-center gap-2 px-3 py-1.5 text-sm rounded-lg bg-slate-800 hover:bg-slate-700 transition-colors">
                 <i class="ph ph-sign-out"></i> Kembali
@@ -53,7 +54,6 @@
                         Mulai Siaran
                     </button>
                  </div>
-                  
             </div>
 
             <!-- Card Penonton -->
@@ -90,7 +90,6 @@
                     </div>
                 </div>
                 <div class="relative aspect-video bg-black rounded-xl overflow-hidden border border-slate-800 group">
-                    <!-- Mengubah object-cover menjadi object-contain agar orientasi portrait/landscape dari mobile tidak terpotong (crop) -->
                     <video id="local-video" autoplay playsinline muted class="w-full h-full object-contain bg-slate-950"></video>
                     
                     <!-- Kontrol Kamera Tambahan -->
@@ -120,7 +119,7 @@
                     <video id="remote-video" autoplay playsinline class="w-full h-full object-contain bg-slate-950"></video>
                     <div id="remote-video-loading" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/80 backdrop-blur-sm">
                         <i class="ph ph-spinner-gap text-4xl text-emerald-500 animate-spin mb-4"></i>
-                        <p class="text-slate-300 font-medium">Menunggu penyiar...</p>
+                        <p class="text-slate-300 font-medium" id="viewer-loading-text">Menunggu penyiar...</p>
                     </div>
                 </div>
             </div>
@@ -128,28 +127,28 @@
 
     </main>
 
-    <script>
+    <script type="module">
+        import * as mediasoupClient from 'https://esm.sh/mediasoup-client@3';
+
+        // --- SISA KODE ANDA TETAP SAMA ---
         const socket = io({
             path: '/live/socket.io'
         });
 
-        // State & Variabel
-        let peerConnection;
+        // State Mediasoup & Variabel
+        let device;
+        let producerTransport;
+        let consumerTransport;
+        let videoProducer;
+        let remoteProducerId = null;
+        
         let localStream;
         let currentRoomId = '';
         let currentMode = null;
         
         // State Kamera
-        let currentFacingMode = 'user'; // 'user' (depan) atau 'environment' (belakang)
+        let currentFacingMode = 'user';
         let isFlashOn = false;
-
-        const rtcConfig = {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun.services.mozilla.com' }
-            ]
-        };
 
         const els = {
             screenHome: document.getElementById('screen-home'),
@@ -167,6 +166,7 @@
             displayRoomId: document.getElementById('display-room-id'),
             displayJoinId: document.getElementById('display-join-id'),
             remoteVideoLoading: document.getElementById('remote-video-loading'),
+            viewerLoadingText: document.getElementById('viewer-loading-text'),
             btnCopyId: document.getElementById('btn-copy-id'),
             btnFlipCamera: document.getElementById('btn-flip-camera'),
             btnToggleFlash: document.getElementById('btn-toggle-flash'),
@@ -195,10 +195,11 @@
         }
 
         function cleanup() {
-            if (peerConnection) {
-                peerConnection.close();
-                peerConnection = null;
-            }
+            // Pembersihan khusus Mediasoup
+            if (videoProducer) { videoProducer.close(); videoProducer = null; }
+            if (producerTransport) { producerTransport.close(); producerTransport = null; }
+            if (consumerTransport) { consumerTransport.close(); consumerTransport = null; }
+            
             if (localStream) {
                 localStream.getTracks().forEach(track => track.stop());
                 localStream = null;
@@ -207,19 +208,29 @@
             els.remoteVideo.srcObject = null;
             els.remoteVideoLoading.classList.remove('hidden');
             
-            // Reset state kamera
             currentFacingMode = 'user';
             isFlashOn = false;
             updateFlashUI();
             els.btnToggleFlash.classList.add('hidden');
+            remoteProducerId = null;
             
-            socket.off('viewer-joined');
-            socket.off('offer');
-            socket.off('answer');
-            socket.off('ice-candidate');
+            socket.off('new-producer');
         }
 
-        // Cek dukungan flash pada track video yang sedang aktif
+        // Inisialisasi Device Mediasoup (Wajib sebelum membuat transport)
+        async function initMediasoupDevice() {
+            if (device && device.loaded) return;
+            return new Promise((resolve) => {
+                socket.emit('getRouterRtpCapabilities', async (routerRtpCapabilities) => {
+                    device = new mediasoupClient.Device();
+                    await device.load({ routerRtpCapabilities });
+                    console.log('Mediasoup Device loaded');
+                    resolve();
+                });
+            });
+        }
+
+        // --- Dukungan Kamera & Flash ---
         function checkFlashSupport(videoTrack) {
             try {
                 const capabilities = videoTrack.getCapabilities();
@@ -231,7 +242,7 @@
                 }
                 updateFlashUI();
             } catch (error) {
-                console.warn("API getCapabilities tidak didukung di browser ini", error);
+                console.warn("API getCapabilities tidak didukung di browser ini");
                 els.btnToggleFlash.classList.add('hidden');
             }
         }
@@ -255,59 +266,69 @@
             });
         }
 
+        // --- 1. Logika Broadcaster (Penyiar) ---
         async function startBroadcasting() {
             cleanup();
             showScreen('broadcaster');
-               let customId = els.inputCustomRoomId.value.trim().toUpperCase();
-            
-            // Opsional: Hanya izinkan huruf dan angka agar URL aman
+            let customId = els.inputCustomRoomId.value.trim().toUpperCase();
             customId = customId.replace(/[^A-Z0-9]/g, '');
 
             currentRoomId = customId || Math.random().toString(36).substring(2, 8).toUpperCase();
-            
-            // currentRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
             els.displayRoomId.textContent = currentRoomId;
             els.broadcasterStatus.textContent = 'Membuka kamera...';
 
             try {
                 localStream = await getMediaStream(currentFacingMode);
                 els.localVideo.srcObject = localStream;
-                
                 checkFlashSupport(localStream.getVideoTracks()[0]);
                 
-                socket.emit('join-room', currentRoomId);
-                els.broadcasterStatus.textContent = 'Menunggu penonton bergabung...';
+                // Beri tahu server bahwa kita berada di room ini (opsional untuk logic server Anda)
+                socket.emit('join-room', currentRoomId); 
+                els.broadcasterStatus.textContent = 'Menyiapkan jaringan SFU...';
 
-                socket.on('viewer-joined', async () => {
-                    els.broadcasterStatus.textContent = 'Penonton bergabung, menyiapkan koneksi...';
-                    
-                    peerConnection = new RTCPeerConnection(rtcConfig);
+                await initMediasoupDevice();
 
-                    localStream.getTracks().forEach(track => {
-                        peerConnection.addTrack(track, localStream);
+                // Meminta Transport Publikasi ke Server
+                socket.emit('createWebRtcTransport', {}, async (response) => {
+                    if (response.error) {
+                        els.broadcasterStatus.textContent = 'Gagal membuat transport: ' + response.error;
+                        return;
+                    }
+
+                    producerTransport = device.createSendTransport(response.params);
+
+                    producerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+                        try {
+                            socket.emit('transport-connect', {
+                                transportId: producerTransport.id,
+                                dtlsParameters
+                            });
+                            callback();
+                        } catch (error) {
+                            errback(error);
+                        }
                     });
 
-                    peerConnection.onicecandidate = (event) => {
-                        if (event.candidate) {
-                            socket.emit('ice-candidate', { roomId: currentRoomId, candidate: event.candidate });
+                    producerTransport.on('produce', async (parameters, callback, errback) => {
+                        try {
+                            socket.emit('transport-produce', {
+                                transportId: producerTransport.id,
+                                kind: parameters.kind,
+                                rtpParameters: parameters.rtpParameters,
+                                appData: parameters.appData
+                            }, ({ id }) => {
+                                callback({ id });
+                            });
+                        } catch (error) {
+                            errback(error);
                         }
-                    };
+                    });
 
-                    const offer = await peerConnection.createOffer();
-                    await peerConnection.setLocalDescription(offer);
+                    // Mulai publikasikan track video ke SFU Server
+                    const videoTrack = localStream.getVideoTracks()[0];
+                    videoProducer = await producerTransport.produce({ track: videoTrack });
                     
-                    socket.emit('offer', { roomId: currentRoomId, offer });
-                });
-
-                socket.on('answer', async (answer) => {
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-                    els.broadcasterStatus.textContent = 'Terhubung dengan penonton!';
-                });
-
-                socket.on('ice-candidate', async (candidate) => {
-                    if (peerConnection) {
-                        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-                    }
+                    els.broadcasterStatus.textContent = 'Sedang Siaran Langsung (SFU Active)';
                 });
 
             } catch (err) {
@@ -316,57 +337,45 @@
             }
         }
 
-        // FUNGSI FLIP CAMERA
+        // --- Modifikasi Flip Camera Khusus Mediasoup ---
         async function flipCamera() {
             if (!localStream) return;
             els.btnFlipCamera.disabled = true;
 
             currentFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
-            
-            // Matikan track video lama
             const oldVideoTrack = localStream.getVideoTracks()[0];
             if (oldVideoTrack) oldVideoTrack.stop();
 
             try {
-                // Minta stream baru (hanya video agar audio tidak putus)
                 const newStream = await navigator.mediaDevices.getUserMedia({
                     video: { facingMode: currentFacingMode },
                     audio: false
                 });
 
                 const newVideoTrack = newStream.getVideoTracks()[0];
-                
-                // Ganti track di local stream
                 localStream.removeTrack(oldVideoTrack);
                 localStream.addTrack(newVideoTrack);
                 els.localVideo.srcObject = localStream;
 
-                // Seamless ganti track di koneksi WebRTC jika penonton sedang terhubung
-                if (peerConnection) {
-                    const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
-                    if (sender) {
-                        sender.replaceTrack(newVideoTrack);
-                    }
+                // Transisi Mulus di Mediasoup: Ganti Track di Producer tanpa memutus transport
+                if (videoProducer) {
+                    await videoProducer.replaceTrack({ track: newVideoTrack });
                 }
 
-                // Cek ulang apakah kamera baru punya flash
                 isFlashOn = false;
                 checkFlashSupport(newVideoTrack);
 
             } catch (error) {
                 console.error("Gagal membalik kamera:", error);
-                // Fallback jika gagal (misal PC tidak punya kamera belakang)
                 currentFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
             } finally {
                 els.btnFlipCamera.disabled = false;
             }
         }
 
-        // FUNGSI TOGGLE FLASH
         async function toggleFlash() {
             if (!localStream) return;
             const videoTrack = localStream.getVideoTracks()[0];
-            
             try {
                 const capabilities = videoTrack.getCapabilities();
                 if (capabilities.torch) {
@@ -381,45 +390,75 @@
             }
         }
 
-        function startViewing(idToJoin) {
-            // ... Logika Viewer Tetap Sama Seperti Sebelumnya ...
+        // --- 2. Logika Viewer (Penonton) ---
+        async function startViewing(idToJoin) {
             cleanup();
             showScreen('viewer');
             
             currentRoomId = idToJoin.toUpperCase();
             els.displayJoinId.textContent = currentRoomId;
-            els.viewerStatus.textContent = 'Menghubungkan ke server...';
+            els.viewerStatus.textContent = 'Menghubungkan ke server SFU...';
+            els.viewerLoadingText.textContent = 'Menunggu penyiar masuk...';
 
             socket.emit('join-room', currentRoomId);
+            await initMediasoupDevice();
 
-            peerConnection = new RTCPeerConnection(rtcConfig);
+            // Dengarkan jika penyiar (producer) baru saja online
+            socket.on('new-producer', async (producerId) => {
+                remoteProducerId = producerId;
+                els.viewerStatus.textContent = 'Menemukan siaran, mengunduh data...';
+                els.viewerLoadingText.textContent = 'Mengunduh stream...';
 
-            peerConnection.ontrack = (event) => {
-                els.remoteVideo.srcObject = event.streams[0];
-                els.remoteVideoLoading.classList.add('hidden');
-                els.viewerStatus.textContent = 'Menerima siaran langsung.';
-            };
+                // Meminta Transport Konsumsi ke Server
+                socket.emit('createWebRtcTransport', {}, async (response) => {
+                    if (response.error) {
+                        console.error(response.error);
+                        return;
+                    }
 
-            peerConnection.onicecandidate = (event) => {
-                if (event.candidate) {
-                    socket.emit('ice-candidate', { roomId: currentRoomId, candidate: event.candidate });
-                }
-            };
+                    consumerTransport = device.createRecvTransport(response.params);
 
-            socket.on('offer', async (offer) => {
-                els.viewerStatus.textContent = 'Menerima data koneksi...';
-                
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-                const answer = await peerConnection.createAnswer();
-                await peerConnection.setLocalDescription(answer);
-                
-                socket.emit('answer', { roomId: currentRoomId, answer });
-            });
+                    consumerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+                        try {
+                            socket.emit('transport-connect', {
+                                transportId: consumerTransport.id,
+                                dtlsParameters
+                            });
+                            callback();
+                        } catch (error) {
+                            errback(error);
+                        }
+                    });
 
-            socket.on('ice-candidate', async (candidate) => {
-                if (peerConnection) {
-                    await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-                }
+                    // Consume Media
+                    socket.emit('consume', {
+                        producerId: remoteProducerId,
+                        rtpCapabilities: device.rtpCapabilities,
+                        transportId: consumerTransport.id
+                    }, async (response) => {
+                        if (response.error) {
+                            console.error(response.error);
+                            return;
+                        }
+
+                        const consumer = await consumerTransport.consume({
+                            id: response.params.id,
+                            producerId: response.params.producerId,
+                            kind: response.params.kind,
+                            rtpParameters: response.params.rtpParameters
+                        });
+
+                        const stream = new MediaStream();
+                        stream.addTrack(consumer.track);
+                        els.remoteVideo.srcObject = stream;
+                        
+                        els.remoteVideoLoading.classList.add('hidden');
+                        els.viewerStatus.textContent = 'Menerima siaran langsung (SFU).';
+
+                        // Resume consumer dari sisi server
+                        socket.emit('consumer-resume', { consumerId: consumer.id });
+                    });
+                });
             });
         }
 

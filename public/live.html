@@ -3,318 +3,207 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>StreamLokal - WebRTC Custom Server</title>
-    
-    <!-- Mengimpor Socket.io Client -->
-    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <title>Live Streaming Mediasoup SFU</title>
+    <!-- Memuat Tailwind CSS untuk styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Memuat Socket.io -->
+       <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <!-- Memuat Mediasoup Client v3 -->
+    <script src="https://unpkg.com/mediasoup-client@3/mediasoup-client.min.js"></script>
 </head>
-<body>
+<body class="bg-gray-100 min-h-screen p-8 text-gray-800">
+    <div class="max-w-5xl mx-auto">
+        <header class="mb-8">
+            <h1 class="text-3xl font-bold text-gray-900">Sistem Live Streaming (SFU)</h1>
+            <p class="text-gray-500 mt-2">Mode Penyiar dan Penonton menggunakan Mediasoup</p>
+        </header>
 
-    <!-- Header -->
-    <header id="app-header">
-        <div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <!-- Panel Penyiar -->
+            <div class="bg-white p-6 rounded-lg shadow-md border-t-4 border-blue-500">
+                <h2 class="text-xl font-semibold mb-4">Panel Penyiar (Broadcaster)</h2>
+                <video id="localVideo" class="w-full bg-black rounded mb-4 aspect-video object-cover" autoplay muted playsinline></video>
+                <div class="flex gap-2">
+                    <button id="btnStartCamera" class="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded font-medium transition-colors">Nyala Kamera</button>
+                    <button id="btnPublish" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded font-medium transition-colors disabled:opacity-50" disabled>Mulai Siaran</button>
+                </div>
+            </div>
+
+            <!-- Panel Penonton -->
+            <div class="bg-white p-6 rounded-lg shadow-md border-t-4 border-green-500">
+                <h2 class="text-xl font-semibold mb-4">Panel Penonton (Viewer)</h2>
+                <video id="remoteVideo" class="w-full bg-black rounded mb-4 aspect-video object-cover" autoplay playsinline></video>
+                <div class="flex gap-2 items-center">
+                    <button id="btnSubscribe" class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded font-medium transition-colors hidden">Tonton Siaran</button>
+                    <span id="statusStream" class="text-sm text-gray-500">Menunggu siaran dimulai...</span>
+                </div>
+            </div>
         </div>
-        <button id="btn-back" style="display: none;">Kembali</button>
-    </header>
+    </div>
 
-    <main id="app-main">
+    <script type="module">
+         import * as mediasoupClient from 'https://esm.sh/mediasoup-client@3';
+        // Menginisialisasi koneksi socket sesuai dengan path di server
+        const socket = io({ path: '/live/socket.io' });
         
-        <!-- Layar Utama -->
-        <div id="screen-home">
-            <!-- Card Penyiar -->
-            <div>
-                <h2>Jadi Penyiar</h2>
-                <p>Buka kamera Anda dan bagikan ID ruangan agar orang lain dapat menonton secara langsung.</p>
-                <button id="btn-start-broadcast">Mulai Siaran</button>
-            </div>
+        let device;
+        let localStream;
+        let producerTransport;
+        let consumerTransport;
+        let remoteProducerId = null;
 
-            <hr>
+        // Elemen DOM
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const btnStartCamera = document.getElementById('btnStartCamera');
+        const btnPublish = document.getElementById('btnPublish');
+        const btnSubscribe = document.getElementById('btnSubscribe');
+        const statusStream = document.getElementById('statusStream');
 
-            <!-- Card Penonton -->
-            <div>
-                <h2>Tonton Siaran</h2>
-                <p>Masukkan ID ruangan dari penyiar untuk menonton video langsung mereka.</p>
-                <div>
-                    <input type="text" id="input-join-id" placeholder="Masukkan ID Ruangan (Misal: X9B2A)" />
-                    <button id="btn-join-view" disabled>Hubungkan</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Layar Penyiar -->
-        <div id="screen-broadcaster" style="display: none;">
-            <div>
-                <div>
-                    <h2>Siaran Langsung</h2>
-                    <p id="broadcaster-status">Mempersiapkan...</p>
-                </div>
-                <div>
-                    <span>Room ID:</span>
-                    <strong id="display-room-id">---</strong>
-                    <button id="btn-copy-id">Salin Link</button>
-                </div>
-                <div>
-                    <video id="local-video" autoplay playsinline muted width="100%"></video>
-                </div>
-            </div>
-        </div>
-
-        <!-- Layar Penonton -->
-        <div id="screen-viewer" style="display: none;">
-            <div>
-                <h2>Menonton Siaran: <span id="display-join-id">---</span></h2>
-                <p id="viewer-status">Menghubungkan...</p>
-            </div>
-            <div>
-                <video id="remote-video" autoplay playsinline width="100%"></video>
-                <div id="remote-video-loading">
-                    <p>Menunggu penyiar...</p>
-                </div>
-            </div>
-        </div>
-
-    </main>
-
-    <script>
-        // Menghubungkan ke server Socket.io
-        // Jika server Node berjalan di port 3000, ubah menjadi 'http://localhost:3000'
-        // Jika file HTML dijalankan dari server Node yang sama, cukup kosongkan `io()`
-        // const socket = io(); 
-        const socket = io({
-            path: '/live/socket.io'
+        // --- 1. Inisialisasi Device Mediasoup ---
+        socket.on('connect', async () => {
+            console.log('Terhubung ke server signaling');
+            
+            // Minta kemampuan router dari server
+            socket.emit('getRouterRtpCapabilities', async (routerRtpCapabilities) => {
+                device = new mediasoupClient.Device();
+                await device.load({ routerRtpCapabilities });
+                console.log('Mediasoup Device berhasil dimuat');
+            });
         });
 
-        // State & Variabel
-        let peerConnection;
-        let localStream;
-        let currentRoomId = '';
-        let currentMode = null; // 'broadcaster' atau 'viewer'
-
-        const rtcConfig = {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun.services.mozilla.com' }
-            ]
-        };
-
-        const els = {
-            screenHome: document.getElementById('screen-home'),
-            screenBroadcaster: document.getElementById('screen-broadcaster'),
-            screenViewer: document.getElementById('screen-viewer'),
-            btnBack: document.getElementById('btn-back'),
-            btnStartBroadcast: document.getElementById('btn-start-broadcast'),
-            btnJoinView: document.getElementById('btn-join-view'),
-            inputJoinId: document.getElementById('input-join-id'),
-            localVideo: document.getElementById('local-video'),
-            remoteVideo: document.getElementById('remote-video'),
-            broadcasterStatus: document.getElementById('broadcaster-status'),
-            viewerStatus: document.getElementById('viewer-status'),
-            displayRoomId: document.getElementById('display-room-id'),
-            displayJoinId: document.getElementById('display-join-id'),
-            remoteVideoLoading: document.getElementById('remote-video-loading'),
-            btnCopyId: document.getElementById('btn-copy-id')
-        };
-
-        function showScreen(mode) {
-            currentMode = mode;
-            els.screenHome.style.display = 'none';
-            els.screenBroadcaster.style.display = 'none';
-            els.screenViewer.style.display = 'none';
-
-            if (mode === 'broadcaster') {
-                els.screenBroadcaster.style.display = 'block';
-                els.btnBack.style.display = 'block';
-            } else if (mode === 'viewer') {
-                els.screenViewer.style.display = 'block';
-                els.btnBack.style.display = 'block';
-            } else {
-                els.screenHome.style.display = 'block';
-                els.btnBack.style.display = 'none';
-            }
-        }
-
-        function cleanup() {
-            if (peerConnection) {
-                peerConnection.close();
-                peerConnection = null;
-            }
-            if (localStream) {
-                localStream.getTracks().forEach(track => track.stop());
-                localStream = null;
-            }
-            els.localVideo.srcObject = null;
-            els.remoteVideo.srcObject = null;
-            els.remoteVideoLoading.style.display = 'block';
-            
-            // Hapus event listener socket spesifik agar tidak dobel
-            socket.off('viewer-joined');
-            socket.off('offer');
-            socket.off('answer');
-            socket.off('ice-candidate');
-        }
-
-        async function startBroadcasting() {
-            cleanup();
-            showScreen('broadcaster');
-            
-            currentRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
-            els.displayRoomId.textContent = currentRoomId;
-            els.broadcasterStatus.textContent = 'Membuka kamera...';
-
+        // --- 2. Logika Penyiar (Broadcaster) ---
+        btnStartCamera.addEventListener('click', async () => {
             try {
-                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                els.localVideo.srcObject = localStream;
-                
-                // Mendaftarkan ruangan ke server
-                socket.emit('join-room', currentRoomId);
-                els.broadcasterStatus.textContent = 'Menunggu penonton bergabung...';
-
-                // Listener untuk WebSockets
-                socket.on('viewer-joined', async () => {
-                    els.broadcasterStatus.textContent = 'Penonton bergabung, menyiapkan koneksi...';
-                    
-                    // Buat koneksi WebRTC baru untuk penonton ini
-                    peerConnection = new RTCPeerConnection(rtcConfig);
-
-                    localStream.getTracks().forEach(track => {
-                        peerConnection.addTrack(track, localStream);
-                    });
-
-                    // Kirim ICE Candidate ke penonton
-                    peerConnection.onicecandidate = (event) => {
-                        if (event.candidate) {
-                            socket.emit('ice-candidate', { roomId: currentRoomId, candidate: event.candidate });
-                        }
-                    };
-
-                    // Buat Offer
-                    const offer = await peerConnection.createOffer();
-                    await peerConnection.setLocalDescription(offer);
-                    
-                    // Kirim offer via server ke penonton
-                    socket.emit('offer', { roomId: currentRoomId, offer });
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 1280, height: 720 },
+                    audio: true
                 });
+                localVideo.srcObject = localStream;
+                btnPublish.disabled = false;
+            } catch (error) {
+                console.error('Gagal mengakses kamera:', error);
+                alert('Tidak dapat mengakses kamera/mikrofon.');
+            }
+        });
 
-                // Menerima Answer dari penonton
-                socket.on('answer', async (answer) => {
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-                    els.broadcasterStatus.textContent = 'Terhubung dengan penonton!';
-                });
+        btnPublish.addEventListener('click', () => {
+            socket.emit('createWebRtcTransport', {}, async (response) => {
+                if (response.error) {
+                    console.error(response.error);
+                    return;
+                }
 
-                // Menerima ICE Candidate dari penonton
-                socket.on('ice-candidate', async (candidate) => {
-                    if (peerConnection) {
-                        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                // Buat send transport di klien
+                producerTransport = device.createSendTransport(response.params);
+
+                // Event saat transport mencoba terhubung (DTLS)
+                producerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+                    try {
+                        socket.emit('transport-connect', {
+                            transportId: producerTransport.id,
+                            dtlsParameters
+                        });
+                        callback();
+                    } catch (error) {
+                        errback(error);
                     }
                 });
 
-            } catch (err) {
-                console.error(err);
-                els.broadcasterStatus.textContent = 'Gagal mengakses kamera.';
-            }
-        }
+                // Event saat mempublikasikan track media
+                producerTransport.on('produce', async (parameters, callback, errback) => {
+                    try {
+                        socket.emit('transport-produce', {
+                            transportId: producerTransport.id,
+                            kind: parameters.kind,
+                            rtpParameters: parameters.rtpParameters,
+                            appData: parameters.appData
+                        }, ({ id }) => {
+                            callback({ id });
+                        });
+                    } catch (error) {
+                        errback(error);
+                    }
+                });
 
-        function startViewing(idToJoin) {
-            cleanup();
-            showScreen('viewer');
-            
-            currentRoomId = idToJoin.toUpperCase();
-            els.displayJoinId.textContent = currentRoomId;
-            els.viewerStatus.textContent = 'Menghubungkan ke server...';
+                // Mulai mengirim track video
+                const videoTrack = localStream.getVideoTracks()[0];
+                const videoProducer = await producerTransport.produce({ track: videoTrack });
 
-            // Memberitahu server bahwa kita ingin bergabung
-            socket.emit('join-room', currentRoomId);
+                // Opsional: Lakukan hal yang sama untuk audio
+                // const audioTrack = localStream.getAudioTracks()[0];
+                // const audioProducer = await producerTransport.produce({ track: audioTrack });
 
-            peerConnection = new RTCPeerConnection(rtcConfig);
-
-            // Tampilkan stream saat diterima
-            peerConnection.ontrack = (event) => {
-                els.remoteVideo.srcObject = event.streams[0];
-                els.remoteVideoLoading.style.display = 'none';
-                els.viewerStatus.textContent = 'Menerima siaran langsung.';
-            };
-
-            // Kirim ICE Candidate kita ke penyiar
-            peerConnection.onicecandidate = (event) => {
-                if (event.candidate) {
-                    socket.emit('ice-candidate', { roomId: currentRoomId, candidate: event.candidate });
-                }
-            };
-
-            // Menerima Offer dari penyiar, dan membuat Answer
-            socket.on('offer', async (offer) => {
-                els.viewerStatus.textContent = 'Menerima data koneksi...';
-                
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-                const answer = await peerConnection.createAnswer();
-                await peerConnection.setLocalDescription(answer);
-                
-                // Kirim answer kembali ke penyiar
-                socket.emit('answer', { roomId: currentRoomId, answer });
+                btnPublish.innerText = "Sedang Siaran";
+                btnPublish.disabled = true;
             });
+        });
 
-            // Menerima ICE Candidate dari penyiar
-            socket.on('ice-candidate', async (candidate) => {
-                if (peerConnection) {
-                    await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        // --- 3. Logika Penonton (Viewer) ---
+        
+        // Mendengarkan jika ada produsen (penyiar) baru di room
+        socket.on('new-producer', (producerId) => {
+            remoteProducerId = producerId;
+            statusStream.innerText = "Siaran tersedia!";
+            statusStream.classList.replace('text-gray-500', 'text-green-600');
+            btnSubscribe.classList.remove('hidden');
+        });
+
+        btnSubscribe.addEventListener('click', () => {
+            if (!remoteProducerId) return;
+
+            socket.emit('createWebRtcTransport', {}, async (response) => {
+                if (response.error) {
+                    console.error(response.error);
+                    return;
                 }
+
+                // Buat receive transport di klien
+                consumerTransport = device.createRecvTransport(response.params);
+
+                consumerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+                    try {
+                        socket.emit('transport-connect', {
+                            transportId: consumerTransport.id,
+                            dtlsParameters
+                        });
+                        callback();
+                    } catch (error) {
+                        errback(error);
+                    }
+                });
+
+                // Minta server untuk mulai mengirim media
+                socket.emit('consume', {
+                    producerId: remoteProducerId,
+                    rtpCapabilities: device.rtpCapabilities,
+                    transportId: consumerTransport.id
+                }, async (response) => {
+                    if (response.error) {
+                        console.error(response.error);
+                        return;
+                    }
+
+                    const consumer = await consumerTransport.consume({
+                        id: response.params.id,
+                        producerId: response.params.producerId,
+                        kind: response.params.kind,
+                        rtpParameters: response.params.rtpParameters
+                    });
+
+                    // Masukkan track yang diterima ke elemen video remote
+                    const stream = new MediaStream();
+                    stream.addTrack(consumer.track);
+                    remoteVideo.srcObject = stream;
+
+                    // Beritahu server untuk melanjutkan (resume) stream yang dijeda di awal
+                    socket.emit('consumer-resume', { consumerId: consumer.id });
+
+                    btnSubscribe.innerText = "Sedang Menonton";
+                    btnSubscribe.disabled = true;
+                });
             });
-        }
-
-        els.btnStartBroadcast.addEventListener('click', startBroadcasting);
-
-        els.inputJoinId.addEventListener('input', (e) => {
-            const val = e.target.value.trim();
-            els.btnJoinView.disabled = val.length === 0;
-            e.target.value = val.toUpperCase();
         });
-
-        els.btnJoinView.addEventListener('click', () => {
-            const id = els.inputJoinId.value.trim();
-            if (id) startViewing(id);
-        });
-
-        els.btnBack.addEventListener('click', () => {
-            cleanup();
-            if (window.location.pathname !== '/') {
-                window.history.pushState({}, '', '/');
-            }
-            showScreen(null);
-        });
-
-        els.btnCopyId.addEventListener('click', () => {
-            if (currentRoomId) {
-                const shareLink = `${window.location.origin}/live/${currentRoomId}`;
-                
-                const textArea = document.createElement("textarea");
-                textArea.value = shareLink;
-                document.body.appendChild(textArea);
-                textArea.select();
-                try {
-                    document.execCommand('copy');
-                    const originalText = els.btnCopyId.textContent;
-                    els.btnCopyId.textContent = 'Tersalin!';
-                    setTimeout(() => {
-                        els.btnCopyId.textContent = originalText;
-                    }, 2000);
-                } catch (err) {}
-                document.body.removeChild(textArea);
-            }
-        });
-
-        // EKSEKUSI SAAT HALAMAN DIMUAT
-        window.addEventListener('DOMContentLoaded', () => {
-            const pathParts = window.location.pathname.split('/');
-            
-            if (pathParts.length >= 3 && pathParts[1] === 'live') {
-                const roomIdFromUrl = pathParts[2];
-                startViewing(roomIdFromUrl);
-            } else {
-                showScreen(null);
-            }
-        });
-
     </script>
 </body>
 </html>

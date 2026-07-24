@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OBS Viewer - Mediasoup</title>
+    
+    <!-- Memuat Socket.io Client -->
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+
+    <style>
+        /* Reset margin & sembunyikan scrollbar agar bersih di OBS */
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            background-color: transparent; /* Transparan agar bisa ditumpuk di OBS */
+        }
+
+        /* Video dibuat memenuhi layar Browser Source OBS */
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain; /* Gunakan 'cover' jika ingin crop otomatis memenuhi frame */
+            background-color: transparent;
+        }
+
+        /* Indikator loading kecil di pojok (opsional, bisa dihapus) */
+        #status {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: rgba(255, 255, 255, 0.7);
+            font-family: monospace;
+            font-size: 12px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 4px 8px;
+            border-radius: 4px;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div id="status">Menunggu siaran...</div>
+    <!-- Atribut autoplay, playsinline, dan muted penting agar video bisa jalan otomatis di browser -->
+    <video id="remote-video" autoplay playsinline></video>
+
+    <script type="module">
+        import * as mediasoupClient from 'https://esm.sh/mediasoup-client@3';
+
+        // 1. Ambil Room ID dari URL (contoh URL: http://ip-server:3000/live/ROOM123)
+        const pathParts = window.location.pathname.split('/');
+        // Mengambil bagian terakhir dari URL dan memastikan huruf besar
+        const currentRoomId = pathParts[pathParts.length - 1].toUpperCase(); 
+        
+        const statusEl = document.getElementById('status');
+        const remoteVideo = document.getElementById('remote-video');
+
+        statusEl.innerText = `Menghubungkan ke Room: ${currentRoomId}...`;
+
+        // 2. Inisialisasi Socket
+        const socket = io({ path: '/live/socket.io' });
+        let device;
+        let consumerTransport;
+
+        socket.on('connect', async () => {
+            statusEl.innerText = `Terhubung ke server. Meminta akses room ${currentRoomId}...`;
+            
+            // Beritahu server bahwa OBS ini masuk ke room spesifik
+            socket.emit('join-room', currentRoomId);
+            
+            // Load Mediasoup Device
+            socket.emit('getRouterRtpCapabilities', async (routerRtpCapabilities) => {
+                device = new mediasoupClient.Device();
+                await device.load({ routerRtpCapabilities });
+                
+                // Minta server mengecek apakah sudah ada siaran di room ini
+                // Pastikan server Anda memiliki listener 'get-producers' (lihat catatan di bawah)
+                socket.emit('get-producers', currentRoomId, (producers) => {
+                    if (producers && producers.length > 0) {
+                        consumeStream(producers[0]);
+                    } else {
+                        statusEl.innerText = "Menunggu penyiar mulai...";
+                    }
+                });
+            });
+        });
+
+        // Dengarkan jika penyiar baru mulai saat OBS sudah standby
+        socket.on('new-producer', (producerId) => {
+            consumeStream(producerId);
+        });
+
+        async function consumeStream(remoteProducerId) {
+            statusEl.innerText = "Menerima stream...";
+
+            socket.emit('createWebRtcTransport', {}, async (response) => {
+                if (response.error) {
+                    statusEl.innerText = "Error transport: " + response.error;
+                    return;
+                }
+
+                consumerTransport = device.createRecvTransport(response.params);
+
+                consumerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+                    try {
+                        socket.emit('transport-connect', {
+                            transportId: consumerTransport.id,
+                            dtlsParameters
+                        });
+                        callback();
+                    } catch (error) {
+                        errback(error);
+                    }
+                });
+
+                socket.emit('consume', {
+                    producerId: remoteProducerId,
+                    rtpCapabilities: device.rtpCapabilities,
+                    transportId: consumerTransport.id
+                }, async (response) => {
+                    if (response.error) {
+                        statusEl.innerText = "Error consume: " + response.error;
+                        return;
+                    }
+
+                    const consumer = await consumerTransport.consume({
+                        id: response.params.id,
+                        producerId: response.params.producerId,
+                        kind: response.params.kind,
+                        rtpParameters: response.params.rtpParameters
+                    });
+
+                    const stream = new MediaStream();
+                    stream.addTrack(consumer.track);
+                    
+                    remoteVideo.srcObject = stream;
+                    
+                    // Sembunyikan status setelah video berhasil diputar
+                    remoteVideo.onloadedmetadata = () => {
+                        statusEl.style.display = 'none'; 
+                    };
+
+                    socket.emit('consumer-resume', { consumerId: consumer.id });
+                });
+            });
+        }
+
+        socket.on('disconnect', () => {
+            statusEl.style.display = 'block';
+            statusEl.innerText = "Terputus dari server. Mencoba ulang...";
+        });
+    </script>
+</body>
+</html>
